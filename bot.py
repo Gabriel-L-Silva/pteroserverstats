@@ -1,115 +1,121 @@
-import os
 import discord
-from discord.ext import commands, tasks
-import aiohttp
+from discord.ext import tasks
 import asyncio
+import yaml
+import os
 from dotenv import load_dotenv
+from utils.ptero_api import get_server_stats
+from utils.discord_utils import create_embed
+from utils.logger import log_info, log_error
+import aiohttp
+import sys
 
-CONFIG_FILE = '.env'
+def prompt_env_var(var_name, prompt_text):
+    value = os.getenv(var_name)
+    if not value:
+        print(f"{prompt_text}: ", end="", flush=True)
+        value = input()
+        with open('.env', 'a') as envfile:
+            envfile.write(f'{var_name}={value}\n')
+    return value
 
-def setup_config():
-    """Prompt user for configuration and save to .env"""
-    print("Configuring bot for first use...")
-    config = {}
-    config['DISCORD_TOKEN'] = input("Enter your Discord Bot Token: ").strip()
-    config['PTERO_API_KEY'] = input("Enter your Pterodactyl API Key: ").strip()
-    config['PTERO_PANEL_URL'] = input("Enter your Pterodactyl Panel URL (e.g., https://panel.example.com): ").strip().rstrip('/')
-    config['SERVER_IDS'] = input("Enter Server IDs separated by commas: ").strip()
-    config['DISCORD_CHANNEL_ID'] = input("Enter Discord Channel ID for auto-posts: ").strip()
+def prompt_config_var(var_name, prompt_text, default=None, is_list=False):
+    if os.path.exists('config.yml'):
+        with open('config.yml', 'r') as file:
+            config = yaml.safe_load(file)
+    else:
+        config = {}
+    value = config.get(var_name)
+    if not value:
+        if is_list:
+            print(f"{prompt_text} (comma separated): ", end="", flush=True)
+            value = input().split(',')
+            value = [v.strip() for v in value if v.strip()]
+        else:
+            print(f"{prompt_text}{' ['+str(default)+']' if default else ''}: ", end="", flush=True)
+            value = input() or default
+        config[var_name] = value
+        with open('config.yml', 'w') as file:
+            yaml.dump(config, file)
+    return value
 
-    with open(CONFIG_FILE, 'w') as f:
-        for k, v in config.items():
-            f.write(f"{k}={v}\n")
+if not os.path.exists('.env') or not os.path.exists('config.yml'):
+    print("First run detected. Let's configure your bot.")
+    prompt_env_var('DISCORD_TOKEN', 'Enter your Discord bot token')
+    prompt_env_var('PTERO_API_KEY', 'Enter your Pterodactyl API key')
+    prompt_env_var('PTERO_PANEL_URL', 'Enter your Pterodactyl panel URL (e.g. https://panel.example.com)')
+    prompt_config_var('channel_id', 'Enter the Discord channel ID to post stats')
+    prompt_config_var('server_ids', 'Enter the Pterodactyl server IDs to track', is_list=True)
+    prompt_config_var('update_interval', 'Enter the update interval in seconds', default=300)
 
-    print(f"Configuration saved to {CONFIG_FILE}")
-
-# Check for config
-if not os.path.exists(CONFIG_FILE):
-    setup_config()
-
-# Load config
-load_dotenv(CONFIG_FILE)
-
-DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-PTERO_API_KEY = os.getenv('PTERO_API_KEY')
-PTERO_PANEL_URL = os.getenv('PTERO_PANEL_URL')
-SERVER_IDS = os.getenv('SERVER_IDS').split(',')
-DISCORD_CHANNEL_ID = os.getenv('DISCORD_CHANNEL_ID')
-
-HEADERS = {
-    'Authorization': f'Bearer {PTERO_API_KEY}',
-    'Accept': 'Application/vnd.pterodactyl.v1+json',
-    'Content-Type': 'application/json'
-}
+load_dotenv()
 
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix='!', intents=intents)
+intents.message_content = True
+client = discord.Client(intents=intents)
 
-async def fetch_server_stats(session, server_id):
-    url = f"{PTERO_PANEL_URL}/api/client/servers/{server_id}/resources"
-    async with session.get(url, headers=HEADERS) as resp:
-        data = await resp.json()
-        attr = data.get('attributes', {})
-        res = attr.get('resources', {})
-        return {
-            'server_id': server_id,
-            'status': attr.get('current_state', 'unknown'),
-            'memory': res.get('memory_bytes', 0),
-            'disk': res.get('disk_bytes', 0),
-            'cpu': res.get('cpu_absolute', 0),
-            'network_rx': res.get('network_rx_bytes', 0),
-            'network_tx': res.get('network_tx_bytes', 0),
-            'uptime': res.get('uptime', 0)
-        }
+with open("config.yml", 'r') as file:
+    config = yaml.safe_load(file)
 
-def bytes_to_human(n):
-    for unit in ['B','KB','MB','GB','TB']:
-        if n < 1024:
-            return f"{n:.2f} {unit}"
-        n /= 1024
-    return f"{n:.2f} PB"
+channel_id = config['channel_id']
+server_ids = config['server_ids']
+update_interval = config['update_interval']
 
-def create_embed(stats_list):
-    embed = discord.Embed(title="Pterodactyl Server Stats", color=0x00ff00)
-    for stat in stats_list:
-        status = "🟢 Online" if stat['status'] == 'running' else "🔴 Offline"
-        embed.add_field(
-            name=f"Server: {stat['server_id']}",
-            value=(
-                f"Status: {status}\n"
-                f"Memory: {bytes_to_human(stat['memory'])}\n"
-                f"Disk: {bytes_to_human(stat['disk'])}\n"
-                f"CPU: {stat['cpu']}%\n"
-                f"Network: ⬆ {bytes_to_human(stat['network_tx'])} | ⬇ {bytes_to_human(stat['network_rx'])}\n"
-                f"Uptime: {stat['uptime'] // 60} min"
-            ),
-            inline=False
-        )
-    return embed
-
-@bot.command()
-async def stats(ctx):
-    async with aiohttp.ClientSession() as session:
-        tasks_list = [fetch_server_stats(session, sid) for sid in SERVER_IDS]
-        stats_list = await asyncio.gather(*tasks_list)
-    embed = create_embed(stats_list)
-    await ctx.send(embed=embed)
-
-@tasks.loop(minutes=5)
-async def auto_post():
-    channel = bot.get_channel(int(DISCORD_CHANNEL_ID))
-    if not channel:
-        print("Invalid channel ID or bot missing permissions.")
-        return
-    async with aiohttp.ClientSession() as session:
-        tasks_list = [fetch_server_stats(session, sid) for sid in SERVER_IDS]
-        stats_list = await asyncio.gather(*tasks_list)
-    embed = create_embed(stats_list)
-    await channel.send(embed=embed)
-
-@bot.event
+@client.event
 async def on_ready():
-    print(f'Bot connected as {bot.user}')
-    auto_post.start()
+    log_info(f"Logged in as {client.user}")
+    update_stats.start()
 
-bot.run(DISCORD_TOKEN)
+@tasks.loop(seconds=update_interval)
+async def update_stats():
+    channel = client.get_channel(channel_id)
+    if channel is None:
+        log_error("Channel not found.")
+        return
+
+    async with aiohttp.ClientSession() as session:
+        for server_id in server_ids:
+            try:
+                stats = await get_server_stats(session, server_id)
+                embed = create_embed(server_id, stats['attributes']['resources'])
+                await channel.send(embed=embed)
+            except Exception as e:
+                log_error(f"Failed to fetch stats for {server_id}: {e}")
+
+@client.event
+async def on_message(message):
+    if message.author == client.user:
+        return
+    msg = message.content.lower()
+    if msg.startswith("!pterostats"):
+        channel = message.channel
+        async with aiohttp.ClientSession() as session:
+            for server_id in server_ids:
+                try:
+                    stats = await get_server_stats(session, server_id)
+                    embed = create_embed(server_id, stats['attributes']['resources'])
+                    await channel.send(embed=embed)
+                except Exception as e:
+                    log_error(f"Failed to fetch stats for {server_id}: {e}")
+    elif msg.startswith("!addserver "):
+        new_id = message.content.split(maxsplit=1)[1].strip()
+        if new_id in server_ids:
+            await message.channel.send(f"Server `{new_id}` is already being tracked.")
+        else:
+            server_ids.append(new_id)
+            with open("config.yml", 'w') as file:
+                yaml.dump({'channel_id': channel_id, 'server_ids': server_ids, 'update_interval': update_interval}, file)
+            await message.channel.send(f"Server `{new_id}` added to tracking list.")
+            log_info(f"Added server {new_id}")
+    elif msg.startswith("!removeserver "):
+        rem_id = message.content.split(maxsplit=1)[1].strip()
+        if rem_id not in server_ids:
+            await message.channel.send(f"Server `{rem_id}` is not being tracked.")
+        else:
+            server_ids.remove(rem_id)
+            with open("config.yml", 'w') as file:
+                yaml.dump({'channel_id': channel_id, 'server_ids': server_ids, 'update_interval': update_interval}, file)
+            await message.channel.send(f"Server `{rem_id}` removed from tracking list.")
+            log_info(f"Removed server {rem_id}")
+
+client.run(os.getenv("DISCORD_TOKEN"))
