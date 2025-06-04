@@ -12,12 +12,12 @@ class Configuration:
         load_dotenv()
         
         # Load main config
-        config_file = "config.yml"
+        self.config_file = "config.yml"
         if os.path.exists("config-dev.yml"):
             print(f"{Fore.CYAN}[PSS] {Fore.YELLOW}Using development configuration...")
-            config_file = "config-dev.yml"
+            self.config_file = "config-dev.yml"
         
-        with open(config_file, 'r', encoding='utf-8') as file:
+        with open(self.config_file, 'r', encoding='utf-8') as file:
             self.config = yaml.safe_load(file)
         
         # Validate configuration
@@ -54,8 +54,22 @@ class Configuration:
                 return default
         return value
     
-    def __getattr__(self, name):
-        """Allow direct attribute access to config"""
-        if name in self.config:
-            return self.config[name]
-        raise AttributeError(f"'Configuration' object has no attribute '{name}'") 
+    def set(self, key, value):
+        """Set configuration value"""
+        keys = key.split('.')
+        config = self.config
+        
+        # Navigate to the nested location
+        for k in keys[:-1]:
+            if k not in config:
+                config[k] = {}
+            config = config[k]
+        
+        # Set the value
+        config[keys[-1]] = value
+    
+    def save(self):
+        """Save configuration to file"""
+        with open(self.config_file, 'w', encoding='utf-8') as file:
+            yaml.dump(self.config, file, default_flow_style=False)
+        print(f"{Fore.CYAN}[PSS] {Fore.GREEN}Configuration saved")
