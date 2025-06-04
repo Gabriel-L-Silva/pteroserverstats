@@ -44,21 +44,32 @@ async def send_message_for_all(client, all_stats, config):
     async for message in channel.history(limit=20):
         if message.author.id == client.user.id:
             messages.append(message)
-    # Build embeds, one per server
+    
     embeds = []
     for server_data in all_stats:
         name = server_data['details']['name']
         uuid = server_data['details']['uuid']
+        server_id = uuid # Using the actual server ID
+        
         panel_url = os.getenv('PanelURL').rstrip('/')
         manage_url = f"{panel_url}/server/{uuid}"
+        
         embed = discord.Embed()
         embed.title = f"{name} - {config.get('embed.title', 'Server Stats')}"
         embed.description = f"Last update: <t:{int(datetime.now(timezone.utc).timestamp())}:R>"
         embed.color = int(config.get('embed.color', '5865F2'), 16)
         embed.timestamp = datetime.now(timezone.utc)
+        
+        # Add server fields
         for fname, fval, finline in build_server_embed_fields(server_data, config):
             embed.add_field(name=fname, value=fval, inline=finline)
-        # Add a button as a view (discord.py 2.0+)
+            
+        # Set footer with server ID
+        footer_text = config.get('embed.footer.text', 'PteroServerStats')
+        embed.set_footer(text=f"{footer_text} • ID: {server_id[:8]}...{server_id[-4:]}", 
+                        icon_url=config.get('embed.footer.icon', ''))
+        
+        # Add manage button as a view (discord.py 2.0+)
         try:
             view = discord.ui.View()
             view.add_item(discord.ui.Button(label="Manage Server", url=manage_url, style=discord.ButtonStyle.link))
