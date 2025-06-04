@@ -6,7 +6,6 @@ __pycache__/
 
 # Ignore environment and config files
 .env
-config.yml
 
 # Ignore OS files
 .DS_Store
