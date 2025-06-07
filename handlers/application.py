@@ -143,15 +143,24 @@ class Application:
         if not server_ids:
             print(f"{Fore.CYAN}[PSS] {Fore.RED}No server IDs found in config or environment!")
             return
+
         # Gather stats for all servers
         all_stats = []
         for server_id in server_ids:
             os.environ['ServerID'] = server_id
-            stats = await get_stats(self.client, self.config, return_data=True)
-            if stats:
-                all_stats.append(stats)
-        # Send a single message for all servers
-        await send_message_for_all(self.client, all_stats, self.config)
+            try:
+                stats = await get_stats(self.client, self.config, return_data=True)
+                if stats and isinstance(stats, dict) and 'details' in stats and 'stats' in stats:
+                    all_stats.append(stats)
+                else:
+                    print(f"{Fore.CYAN}[PSS] {Fore.RED}Invalid stats received for server {server_id}")
+            except Exception as e:
+                print(f"{Fore.CYAN}[PSS] {Fore.RED}Error getting stats for server {server_id}: {str(e)}")
+                continue
+
+        # Only send message if we have valid stats
+        if all_stats:
+            await send_message_for_all(self.client, all_stats, self.config)
     
     async def _set_presence(self):
         """Set bot presence/status"""

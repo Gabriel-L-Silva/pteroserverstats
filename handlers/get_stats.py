@@ -26,7 +26,18 @@ async def get_stats(client, config, return_data=False):
         
         data = {
             'details': details,
-            'stats': stats,
+            'stats': stats or {
+                'current_state': 'missing',
+                'is_suspended': False,
+                'resources': {
+                    'memory_bytes': 0,
+                    'cpu_absolute': 0,
+                    'disk_bytes': 0,
+                    'network_rx_bytes': 0,
+                    'network_tx_bytes': 0,
+                    'uptime': 0
+                }
+            },
             'timestamp': int(time.time() * 1000)
         }
         
@@ -70,7 +81,31 @@ async def get_stats(client, config, return_data=False):
                 
             except Exception:
                 print(f"{Fore.CYAN}[PSS] {Fore.RED}Something went wrong with cache data...")
-                return None
-        else:
-            print(f"{Fore.CYAN}[PSS] {Fore.RED}Last cache was not found!")
-            return None
+        
+        # If we get here, create a minimal valid data structure
+        fallback_data = {
+            'details': {
+                'name': f"Server {os.getenv('ServerID')}",
+                'uuid': os.getenv('ServerID'),
+                'limits': {'memory': 0, 'disk': 0}
+            },
+            'stats': {
+                'current_state': 'missing',
+                'is_suspended': False,
+                'resources': {
+                    'memory_bytes': 0,
+                    'cpu_absolute': 0,
+                    'disk_bytes': 0,
+                    'network_rx_bytes': 0,
+                    'network_tx_bytes': 0,
+                    'uptime': 0
+                }
+            },
+            'timestamp': int(time.time() * 1000)
+        }
+        
+        if return_data:
+            return fallback_data
+            
+        await send_message(client, fallback_data, config)
+        return fallback_data
